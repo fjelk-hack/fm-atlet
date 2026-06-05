@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+  <title>FM ATLET</title>
+  <link rel="apple-touch-icon" href="apple-touch-icon.png"/>
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png"/>
+  <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png"/>
+  <link rel="manifest" href="manifest.json"/>
+  <meta name="theme-color" content="#070708"/>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@400;500&display=swap"/>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0E0E0F;color:#DEDAD2;font-family:Barlow,sans-serif}
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+    input[type=number]{-moz-appearance:textfield}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/htm@3/dist/htm.umd.js"></script>
+<script>
+const html = htm.bind(React.createElement);
+const {useState,useEffect,useRef,useCallback} = React;
+
+const T={red:"#BF0A30",gold:"#B89010",black:"#070708",bg:"#0E0E0F",card:"#161617",border:"#242425",text:"#DEDAD2",muted:"#5A5A58",white:"#F0EDE5"};
+const PROG_START=new Date("2026-06-01T00:00:00");
+const PROG_END=new Date("2026-12-31T00:00:00");
+const CHINS_TEST_1=new Date("2026-06-05T00:00:00");
+const FIVEKM_TEST_1=new Date("2026-06-07T00:00:00");
+
+const pad=n=>String(n).padStart(2,"0");
+const ds=d=>d.toISOString().split("T")[0];
+const now0=()=>{const d=new Date();d.setHours(0,0,0,0);return d;};
+const fmtSecs=s=>`${Math.floor(s/60)}:${pad(s%60)}`;
+const r25=kg=>Math.round(kg/2.5)*2.5;
+const est10=s=>(s/60)*2.085;
+const gtgReps=max=>Math.max(1,Math.floor(max*0.5));
+
+function biWeekly(date,anchor){
+  const diff=Math.round((date-anchor)/86400000);
+  return diff>=0&&diff%14===0;
+}
+const weekFromStart=date=>Math.max(0,Math.floor((date-PROG_START)/(7*86400000)));
+const satPass=date=>["A","B","C"][weekFromStart(date)%3];
+const sunType=date=>weekFromStart(date)%2===0?"A":"B";
+function schedule(date){
+  const dow=date.getDay();
+  const active=date>=PROG_START&&date<=PROG_END;
+  const ctFri=dow===5&&biWeekly(date,CHINS_TEST_1);
+  const t5sun=dow===0&&biWeekly(date,FIVEKM_TEST_1);
+  return{active,chins:active&&dow!==6,chinTest:active&&ctFri,bench:active&&[1,3,5].includes(dow),runTue:active&&dow===2,runThu:active&&dow===4,runSat:active&&dow===6,test5km:active&&t5sun,intervals:active&&dow===0&&!t5sun};
+}
+function benchSets(max){
+  const restFor=pct=>Math.round((60+((pct-0.5)/0.5)*60)/15)*15;
+  return[
+    {id:"UV1",pct:.5,reps:10},{id:"UV2",pct:.65,reps:5},{id:"UV3",pct:.75,reps:3},
+    {id:"UV4",pct:.82,reps:1},{id:"UV5",pct:.88,reps:1},{id:"ARB1",pct:.93,reps:1},
+    {id:"ARB2",pct:.97,reps:1},{id:"MAX",pct:1,reps:1,isMax:true},
+    {id:"BO1",pct:.875,reps:3,isBO:true},{id:"BO2",pct:.875,reps:3,isBO:true},{id:"BO3",pct:.875,reps:3,rest:0,isBO:true}
+  ].map(s=>({...s,kg:r25(max*s.pct),rest:s.rest===0?0:restFor(s.pct)}));
+}
+function calcFM(bench,chins,tenKmMin){
+  const score=Math.floor(tenKmMin)*5-Math.round(bench)-chins*2;
+  if(score<=50) return{score,grade:"GULD",color:T.gold,desc:"1:A GRADEN"};
+  if(score<=80) return{score,grade:"SILVER",color:"#8E8E8E",desc:"2:A GRADEN"};
+  if(score<=130)return{score,grade:"BRONS",color:"#B07030",desc:"3:E GRADEN"};
+  return{score,grade:"—",color:T.muted,desc:"UNDER KRAV"};
+}
+function usmcLevel(reps){
+  if(reps>=20)return{label:"USMC PERFECT SCORE",sub:"20+ REPS",color:T.gold};
+  if(reps>=10)return{label:"USMC STRONG",sub:"10+ REPS",color:"#8E8E8E"};
+  if(reps>=3) return{label:"USMC MINIMUM",sub:"3+ REPS",color:T.muted};
+  return null;
+}
+
+const SKEY="fmatlet_v1";
+const DEFAULTS={benchMax:80,chinsMax:10,fiveKmSec:1151,logs:{},benchHist:[{d:"2026-06-01",v:80}],chinsHist:[{d:"2026-06-01",v:10}],fiveKmHist:[{d:"2026-06-07",v:1151}]};
+const loadDB=()=>{try{const r=localStorage.getItem(SKEY);return r?JSON.parse(r):null;}catch{return null;}};
+const saveDB=d=>{try{localStorage.setItem(SKEY,JSON.stringify(d));}catch{}};
+
+const IST={background:"#09090A",border:"1px solid #2A2A2B",color:T.text,padding:"9px 12px",fontSize:16,fontFamily:"Barlow Condensed, sans-serif",outline:"none",letterSpacing:1};
+
+function Block({children,accent,style}){
+  return html`<div style=${{background:T.card,border:`1px solid ${accent?accent+"50":T.border}`,marginBottom:1,...style}}>${children}</div>`;
+}
+function Divider(){return html`<div style=${{height:1,background:T.border}}></div>`;}
+function Lbl({children,accent}){
+  return html`<div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:9,fontWeight:700,letterSpacing:3,color:accent?T.gold:T.muted,marginBottom:7}}>${children}</div>`;
+}
+function SaveBtn({onClick}){
+  return html`<button onClick=${onClick} style=${{background:T.red,border:"none",color:"white",padding:"9px 18px",fontFamily:"Barlow Condensed, sans-serif",fontSize:10,letterSpacing:2.5,fontWeight:700,cursor:"pointer",flexShrink:0}}>SPARA</button>`;
+}
+function DoneBtn({done,onToggle}){
+  return html`<button onClick=${onToggle} style=${{width:"100%",padding:"12px 0",background:done?T.red:"transparent",border:`1px solid ${done?T.red:T.border}`,color:done?"#fff":T.muted,fontFamily:"Barlow Condensed, sans-serif",fontSize:10,letterSpacing:3,fontWeight:700,cursor:"pointer"}}>${done?"● GENOMFÖRT":"MARKERA SOM KLAR"}</button>`;
+}
+
+function MiniChart({data,color,reversed}){
+  if(!data||data.length<2)return html`<div style=${{padding:"20px",textAlign:"center",fontSize:10,color:T.muted,letterSpacing:1}}>LOGGA FLER PASS FÖR GRAF</div>`;
+  const W=300,H=80,P=10;
+  const vals=data.map(d=>d.v);
+  const minV=Math.min(...vals),maxV=Math.max(...vals),range=maxV-minV||1;
+  const x=i=>P+(i/(data.length-1))*(W-P*2);
+  const y=v=>reversed?P+((v-minV)/range)*(H-P*2):H-P-((v-minV)/range)*(H-P*2);
+  const pts=data.map((d,i)=>`${x(i)},${y(d.v)}`).join(" ");
+  return html`<svg viewBox="0 0 ${W} ${H}" style=${{width:"100%",height:H,display:"block"}}>
+    ${[0,.5,1].map((t,i)=>html`<line key=${i} x1=${P} x2=${W-P} y1=${P+t*(H-P*2)} y2=${P+t*(H-P*2)} stroke=${T.border} stroke-dasharray="2 4"/>`)}
+    <polyline points=${pts} fill="none" stroke=${color} stroke-width="2"/>
+    ${data.map((d,i)=>html`<circle key=${i} cx=${x(i)} cy=${y(d.v)} r="3" fill=${color}/>`)}
+    ${data.map((d,i)=>html`<text key=${i} x=${x(i)} y=${H} text-anchor="middle" font-size="7" fill=${T.muted}>${d.d}</text>`)}
+    <text x=${W-P} y=${y(vals[vals.length-1])-4} text-anchor="end" font-size="9" fill=${color} font-weight="700">${vals[vals.length-1]}</text>
+  </svg>`;
+}
+
+function RestBar({sec,onStop}){
+  if(sec<=0)return null;
+  return html`<div style=${{background:T.red,padding:"10px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+    <span style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:10,letterSpacing:3}}>VILA</span>
+    <span style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:32,fontWeight:900}}>${Math.floor(sec/60)}:${pad(sec%60)}</span>
+    <button onClick=${onStop} style=${{background:"transparent",border:"1px solid rgba(255,255,255,.35)",color:"white",padding:"3px 10px",fontFamily:"Barlow Condensed, sans-serif",fontSize:9,letterSpacing:2,cursor:"pointer"}}>AVBRYT</button>
+  </div>`;
+}
+
+function RunSegs({segs}){
+  return html`<div style=${{padding:"0 20px"}}>
+    ${segs.map((seg,i)=>html`<div key=${i} style=${{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 0",borderBottom:i<segs.length-1?`1px solid ${T.border}`:"none"}}>
+      <div>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:13,fontWeight:700,letterSpacing:2,color:seg.accent?T.gold:T.text}}>${seg.label}</div>
+        <div style=${{fontSize:11,color:T.muted,marginTop:2}}>${seg.desc}</div>
+      </div>
+      ${seg.km!=null&&html`<div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:24,fontWeight:700,color:T.white}}>${seg.km}<span style=${{fontSize:10,color:T.muted,marginLeft:4}}>KM</span></div>`}
+      ${seg.dur&&html`<div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:24,fontWeight:700,color:T.white}}>${seg.dur}<span style=${{fontSize:10,color:T.muted,marginLeft:4}}>MIN</span></div>`}
+    </div>`)}
+  </div>`;
+}
+
+function SatPass({today,log,onLog,d}){
+  const pass=satPass(today);
+  const segsA=[
+    {label:"DRAG 1",dur:12,desc:"Under AT — 4:15–4:20/km · 163–168 puls",accent:true},
+    {label:"VILA",dur:3,desc:"Jogg"},
+    {label:"DRAG 2",dur:12,desc:"Under AT — 4:15–4:20/km",accent:true},
+    {label:"VILA",dur:3,desc:"Jogg"},
+    {label:"DRAG 3",dur:12,desc:"Under AT — 4:15–4:20/km",accent:true},
+  ];
+  const segsB=[
+    {label:"DRAG 1",dur:20,desc:"LT — 4:40–4:50/km · 158–163 puls",accent:true},
+    {label:"VILA",dur:3,desc:"Jogg"},
+    {label:"DRAG 2",dur:20,desc:"LT — 4:40–4:50/km",accent:true},
+  ];
+  const segsC=[{label:"KONTINUERLIGT",dur:40,desc:"4:25–4:35/km · kombinerar båda trösklarna",accent:true}];
+  const segs=pass==="A"?segsA:pass==="B"?segsB:segsC;
+  const titles={A:"LÖRDAG — TRÖSKEL PASS A · 3×12 MIN",B:"LÖRDAG — TRÖSKEL PASS B · 2×20 MIN",C:"LÖRDAG — TRÖSKEL PASS C · 40 MIN"};
+  return html`<div>
+    <div style=${{padding:"16px 20px 8px",background:T.bg}}><${Lbl}>${titles[pass]}</${Lbl}></div>
+    <${Block}>
+      <${RunSegs} segs=${segs}/>
+      <${Divider}/><div style=${{padding:"12px 20px"}}><${DoneBtn} done=${!!log.runDone} onToggle=${()=>onLog(d,"runDone",!log.runDone)}/></div>
+    </${Block}>
+  </div>`;
+}
+
+function SunPass({today,log,onLog,d}){
+  const type=sunType(today);
+  const segsA=[{label:"8×1 KM",km:8,desc:"10k-pace — 3:55–4:00/km · 90 sek joggvila",accent:true}];
+  const segsB=[
+    {label:"Z2",km:5,desc:"5:00–5:20/km — uppvärmning"},
+    {label:"5K-PACE",km:5,desc:"3:45–3:50/km · 178–183 puls",accent:true},
+  ];
+  const title=type==="A"?"SÖNDAG — 8×1 KM INTERVALLER":"SÖNDAG — 5K-FART";
+  return html`<div>
+    <div style=${{padding:"16px 20px 8px",background:T.bg}}><${Lbl}>${title}</${Lbl}></div>
+    <${Block}>
+      <${RunSegs} segs=${type==="A"?segsA:segsB}/>
+      <${Divider}/><div style=${{padding:"12px 20px"}}><${DoneBtn} done=${!!log.runDone} onToggle=${()=>onLog(d,"runDone",!log.runDone)}/></div>
+    </${Block}>
+  </div>`;
+}
+
+function TodayView({data,today,onLog,onRest}){
+  const d=ds(today),sched=schedule(today),log=data.logs[d]||{},sets=benchSets(data.benchMax);
+  const [inp,setInp]=useState({});
+  const [chinDone,setChinDone]=useState([]);
+  const [benchDone,setBenchDone]=useState([]);
+  const fld=(k,v)=>setInp(p=>({...p,[k]:v}));
+  const daysLeft=Math.ceil((PROG_START-today)/86400000);
+
+  if(daysLeft>0){
+    const fm=calcFM(data.benchMax,data.chinsMax,est10(data.fiveKmSec));
+    return html`<div style=${{padding:20}}>
+      <${Block}><div style=${{padding:"32px 24px",textAlign:"center"}}>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:10,letterSpacing:4,color:T.muted,marginBottom:6}}>START OM</div>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:80,fontWeight:900,color:T.red,lineHeight:1}}>${daysLeft}</div>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:12,letterSpacing:5,color:T.muted,marginTop:4}}>DAGAR</div>
+        <div style=${{marginTop:20,fontSize:11,color:T.muted}}>Programmet börjar 1 juni 2026 · Slutdatum 31 december 2026</div>
+      </div></${Block}>
+      <div style=${{height:16}}></div>
+      <${Block}><div style=${{padding:"16px 20px"}}>
+        <${Lbl}>NULÄGE</${Lbl}>
+        <div style=${{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16}}>
+          ${[["BÄNK",`${data.benchMax} KG`],["CHINS",data.chinsMax],["5 KM",fmtSecs(data.fiveKmSec)]].map(([l,v])=>html`
+            <div key=${l}><div style=${{fontSize:9,color:T.muted,letterSpacing:2,marginBottom:4}}>${l}</div><div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:22,fontWeight:700,color:T.white}}>${v}</div></div>`)}
+        </div>
+      </div></${Block}>
+      <div style=${{height:8}}></div>
+      <${Block} accent=${fm.color}><div style=${{padding:"24px",textAlign:"center"}}>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:52,fontWeight:900,letterSpacing:6,color:fm.color,lineHeight:1}}>${fm.grade}</div>
+        <div style=${{fontSize:9,color:T.muted,letterSpacing:3,marginTop:6}}>${fm.desc}</div>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:28,fontWeight:700,color:T.white,marginTop:10}}>${fm.score} POÄNG</div>
+      </div></${Block}>
+    </div>`;
+  }
+
+  return html`<div style=${{paddingBottom:20}}>
+    ${sched.chins&&html`<div>
+      <div style=${{padding:"16px 20px 8px",background:T.bg}}><${Lbl} accent=${sched.chinTest}>${sched.chinTest?"TESTDAG — CHINS MAX":"MORGONPASS — GREASE THE GROOVE"}</${Lbl}></div>
+      <${Block}><div style=${{padding:"16px 20px"}}>
+        ${sched.chinTest?html`<div>
+          <div style=${{fontSize:12,color:T.muted,lineHeight:1.8,marginBottom:16}}>Max reps med kontrollerad teknik. Stopp vid tekniktapp — ej failure.</div>
+          <${Lbl}>LOGGA REPS</${Lbl}>
+          <div style=${{display:"flex",gap:8}}>
+            <input type="number" placeholder="Antal chins" value=${inp.ct||""} onInput=${e=>fld("ct",e.target.value)} style=${{...IST,flex:1}}/>
+            <${SaveBtn} onClick=${()=>{const v=parseInt(inp.ct);if(v>0){onLog(d,"chinsMax",v);setInp(p=>({...p,ct:""}));}}}/>
+          </div>
+          ${log.chinsMax&&html`<div style=${{fontSize:10,color:T.gold,marginTop:8,letterSpacing:1}}>LOGGAT: ${log.chinsMax} REPS</div>`}
+        </div>`:html`<div>
+          <table style=${{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr style=${{borderBottom:`1px solid ${T.border}`}}>
+              ${[["SET","left"],["REPS","right"],["VILA","right"]].map(([h,a])=>html`<th key=${h} style=${{textAlign:a,padding:"8px 20px",fontSize:9,letterSpacing:2,color:T.muted,fontWeight:700}}>${h}</th>`)}
+            </tr></thead>
+            <tbody>
+              ${[1,2,3,4,5].map(i=>html`<tr key=${i} style=${{borderBottom:`1px solid ${T.border}22`,opacity:chinDone.includes(i)?0.4:1,transition:"opacity 0.3s"}}>
+                <td style=${{padding:"10px 20px",fontFamily:"Barlow Condensed, sans-serif",fontSize:11,letterSpacing:2,color:chinDone.includes(i)?T.gold:T.muted}}>
+                  ${chinDone.includes(i)?"✓ SET "+i:"SET "+i}
+                </td>
+                <td style=${{textAlign:"right",padding:"10px 8px",fontFamily:"Barlow Condensed, sans-serif",fontSize:18,fontWeight:700,color:T.white}}>${gtgReps(data.chinsMax)}</td>
+                <td style=${{textAlign:"right",padding:"8px 20px"}}>
+                  ${i<5&&html`<button onClick=${()=>{setChinDone(p=>p.includes(i)?p:[...p,i]);onRest(120);}} style=${{background:"transparent",border:`1px solid ${T.border}`,color:T.muted,fontSize:9,letterSpacing:1,padding:"3px 8px",cursor:"pointer",fontFamily:"Barlow Condensed, sans-serif"}}>2:00</button>`}
+                  ${i===5&&!chinDone.includes(5)&&html`<button onClick=${()=>setChinDone(p=>p.includes(5)?p:[...p,5])} style=${{background:"transparent",border:`1px solid ${T.border}`,color:T.muted,fontSize:9,letterSpacing:1,padding:"3px 8px",cursor:"pointer",fontFamily:"Barlow Condensed, sans-serif"}}>KLAR</button>`}
+                </td>
+              </tr>`)}
+            </tbody>
+          </table>
+          <div style=${{fontSize:10,color:T.muted,padding:"12px 20px",lineHeight:1.7}}>Aldrig till failure. Kan spridas under förmiddagen.</div>
+        </div>`}
+      </div></${Block}>
+    </div>`}
+
+    ${sched.bench&&html`<div>
+      <div style=${{padding:"16px 20px 8px",background:T.bg}}><${Lbl}>BÄNKPRESS — BULGAREN</${Lbl}></div>
+      <${Block}>
+        <div style=${{padding:"4px 0"}}>
+          <table style=${{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr style=${{borderBottom:`1px solid ${T.border}`}}>
+              ${[["SET","left"],["KG","right"],["REPS","right"],["VILA","right"]].map(([h,a])=>html`<th key=${h} style=${{textAlign:a,padding:"8px 20px",fontSize:9,letterSpacing:2,color:T.muted,fontWeight:700}}>${h}</th>`)}
+            </tr></thead>
+            <tbody>
+              ${sets.map((s,i)=>html`<tr key=${i} style=${{background:s.isMax?`${T.red}18`:s.isBO?`${T.gold}0D`:"transparent",borderBottom:`1px solid ${T.border}22`,opacity:benchDone.includes(i)?0.4:1,transition:"opacity 0.3s"}}>
+                <td style=${{padding:"10px 20px",fontFamily:"Barlow Condensed, sans-serif",fontSize:11,letterSpacing:2,fontWeight:s.isMax?700:400,color:benchDone.includes(i)?T.gold:s.isMax?T.red:s.isBO?T.gold:T.muted}}>
+                  ${benchDone.includes(i)?"✓ "+s.id:s.id}
+                </td>
+                <td style=${{textAlign:"right",padding:"10px 8px",fontFamily:"Barlow Condensed, sans-serif",fontSize:s.isMax?20:14,fontWeight:s.isMax?900:500,color:s.isMax?T.red:T.white}}>${s.kg}</td>
+                <td style=${{textAlign:"right",padding:"10px 8px",color:T.text,fontSize:13}}>${s.reps}</td>
+                <td style=${{textAlign:"right",padding:"8px 20px"}}>
+                  ${s.rest>0&&html`<button onClick=${()=>{setBenchDone(p=>p.includes(i)?p:[...p,i]);onRest(s.rest);}} style=${{background:"transparent",border:`1px solid ${T.border}`,color:T.muted,fontSize:9,letterSpacing:1,padding:"3px 8px",cursor:"pointer",fontFamily:"Barlow Condensed, sans-serif"}}>${Math.floor(s.rest/60)}:${pad(s.rest%60)}</button>`}
+                  ${s.rest===0&&!benchDone.includes(i)&&html`<button onClick=${()=>setBenchDone(p=>p.includes(i)?p:[...p,i])} style=${{background:"transparent",border:`1px solid ${T.border}`,color:T.muted,fontSize:9,letterSpacing:1,padding:"3px 8px",cursor:"pointer",fontFamily:"Barlow Condensed, sans-serif"}}>KLAR</button>`}
+                </td>
+              </tr>`)}
+            </tbody>
+          </table>
+        </div>
+        <${Divider}/>
+        <div style=${{padding:"16px 20px"}}>
+          <${Lbl}>LOGGA DAGENS MAX (KG)</${Lbl}>
+          <div style=${{display:"flex",gap:8}}>
+            <input type="number" placeholder=${`Förväntat ≈ ${data.benchMax}`} value=${inp.bm||""} onInput=${e=>fld("bm",e.target.value)} style=${{...IST,flex:1}}/>
+            <${SaveBtn} onClick=${()=>{const v=parseFloat(inp.bm);if(v>0){onLog(d,"benchDailyMax",v);setInp(p=>({...p,bm:""}));}}}/>
+          </div>
+          ${log.benchDailyMax&&html`<div style=${{fontSize:10,color:T.gold,marginTop:8,letterSpacing:1}}>LOGGAT: ${log.benchDailyMax} KG</div>`}
+        </div>
+      </${Block}>
+    </div>`}
+
+    ${(sched.runTue||sched.runThu)&&html`<div>
+      <div style=${{padding:"16px 20px 8px",background:T.bg}}><${Lbl}>${sched.runTue?"TISDAG — HM-TEMPO 22 KM":"TORSDAG — Z2 LÅNGPASS"}</${Lbl}></div>
+      <${Block}>
+        <${RunSegs} segs=${sched.runTue
+          ?[
+            {label:"UV",km:5,desc:"Z2 — 5:00–5:20/km"},
+            {label:"HM-TEMPO",km:15,desc:"4:05–4:10/km · 165–170 puls",accent:true},
+            {label:"NV",km:2,desc:"Z1 — under 130 puls"},
+          ]
+          :[
+            {label:"Z2",km:22,desc:"5:00–5:20/km · 135–148 puls · byggs mot 36 km"},
+          ]}/>
+        <${Divider}/><div style=${{padding:"12px 20px"}}><${DoneBtn} done=${!!log.runDone} onToggle=${()=>onLog(d,"runDone",!log.runDone)}/></div>
+      </${Block}>
+    </div>`}
+
+    ${sched.runSat&&html`<${SatPass} today=${today} log=${log} onLog=${onLog} d=${d}/>`}
+
+    ${sched.test5km&&html`<div>
+      <div style=${{padding:"16px 20px 8px",background:T.bg}}><${Lbl} accent=${true}>TESTDAG — 5 KM MAX</${Lbl}></div>
+      <${Block}>
+        <${RunSegs} segs=${[{label:"UV",km:3,desc:"Z2 + STEGRAR SISTA 500M"},{label:"MAX",km:5,desc:"ALL OUT — TIDTAGNING",accent:true},{label:"NV",km:2,desc:"Z1 NEDVARVNING"}]}/>
+        <${Divider}/>
+        <div style=${{padding:"16px 20px"}}>
+          <${Lbl}>LOGGA TID</${Lbl}>
+          <div style=${{display:"flex",gap:8}}>
+            <input type="number" placeholder="Min" value=${inp.fm||""} onInput=${e=>fld("fm",e.target.value)} style=${{...IST,flex:1}}/>
+            <input type="number" placeholder="Sek" value=${inp.fs||""} onInput=${e=>fld("fs",e.target.value)} style=${{...IST,flex:1}}/>
+            <${SaveBtn} onClick=${()=>{const s=parseInt(inp.fm||0)*60+parseInt(inp.fs||0);if(s>0){onLog(d,"fiveKmSec",s);setInp(p=>({...p,fm:"",fs:""}));}}}/>
+          </div>
+          ${log.fiveKmSec&&(()=>{const ten=est10(log.fiveKmSec);return html`<div style=${{fontSize:10,color:T.gold,marginTop:8,letterSpacing:1}}>LOGGAT: ${fmtSecs(log.fiveKmSec)} → 10 KM EST: ${Math.floor(ten)}:${pad(Math.round((ten%1)*60))} MIN</div>`;})()}
+        </div>
+      </${Block}>
+    </div>`}
+
+    ${sched.intervals&&html`<${SunPass} today=${today} log=${log} onLog=${onLog} d=${d}/>`}
+  </div>`;
+}
+
+function PassDetail({day,data,onClose,onGotoToday,isToday}){
+  const s=schedule(day);
+  const reps=gtgReps(data.chinsMax);
+  const sets=benchSets(data.benchMax);
+
+  const rows=[];
+  if(s.chins&&s.chinTest) rows.push({title:"CHINS — MAX TEST",segs:[{label:"MAX REPS",desc:"Kontrollerad teknik — stopp vid tekniktapp"}]});
+  else if(s.chins) rows.push({title:"CHINS — GREASE THE GROOVE",rows5:true,reps});
+  if(s.bench) rows.push({title:"BÄNKPRESS — BULGAREN",bench:true,sets});
+  if(s.runTue) rows.push({title:"HM-TEMPO 22 KM",segs:[{label:"UV",km:5,desc:"Z2 — 5:00–5:20/km"},{label:"HM-TEMPO",km:15,desc:"4:05–4:10/km · 165–170 puls",accent:true},{label:"NV",km:2,desc:"Z1"}]});
+  if(s.runThu) rows.push({title:"Z2 LÅNGPASS",segs:[{label:"Z2",km:22,desc:"5:00–5:20/km · byggs mot 36 km"}]});
+  if(s.runSat){
+    const pass=satPass(day);
+    const segsMap={
+      A:[{label:"DRAG 1",dur:12,desc:"Under AT — 4:15–4:20/km",accent:true},{label:"VILA",dur:3,desc:"Jogg"},{label:"DRAG 2",dur:12,desc:"Under AT — 4:15–4:20/km",accent:true},{label:"VILA",dur:3,desc:"Jogg"},{label:"DRAG 3",dur:12,desc:"Under AT — 4:15–4:20/km",accent:true}],
+      B:[{label:"DRAG 1",dur:20,desc:"LT — 4:40–4:50/km",accent:true},{label:"VILA",dur:3,desc:"Jogg"},{label:"DRAG 2",dur:20,desc:"LT — 4:40–4:50/km",accent:true}],
+      C:[{label:"KONTINUERLIGT",dur:40,desc:"4:25–4:35/km",accent:true}],
+    };
+    const titles={A:"TRÖSKEL PASS A · 3×12 MIN",B:"TRÖSKEL PASS B · 2×20 MIN",C:"TRÖSKEL PASS C · 40 MIN"};
+    rows.push({title:titles[pass],segs:segsMap[pass]});
+  }
+  if(s.test5km) rows.push({title:"5 KM MAXTEST",segs:[{label:"UV",km:3,desc:"Z2 + stegrar sista 500m"},{label:"MAX",km:5,desc:"All out — tidtagning",accent:true},{label:"NV",km:2,desc:"Z1"}]});
+  if(s.intervals){
+    const type=sunType(day);
+    rows.push(type==="A"
+      ?{title:"8×1 KM INTERVALLER",segs:[{label:"8×1 KM",km:8,desc:"3:55–4:00/km · 90 sek vila",accent:true}]}
+      :{title:"5K-FART",segs:[{label:"Z2",km:5,desc:"5:00–5:20/km"},{label:"5K-PACE",km:5,desc:"3:45–3:50/km",accent:true}]}
+    );
+  }
+
+  return html`<div style=${{position:"fixed",inset:0,zIndex:100,display:"flex",flexDirection:"column",background:"rgba(0,0,0,0.75)"}} onClick=${onClose}>
+    <div style=${{marginTop:"auto",background:T.bg,maxHeight:"85vh",overflowY:"auto",maxWidth:430,width:"100%",alignSelf:"center"}} onClick=${e=>e.stopPropagation()}>
+      <div style=${{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 20px",borderBottom:`1px solid ${T.border}`,position:"sticky",top:0,background:T.bg,zIndex:1}}>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:13,fontWeight:700,letterSpacing:3,color:isToday?T.red:T.text}}>
+          ${day.toLocaleDateString("sv-SE",{weekday:"long",day:"numeric",month:"long"}).toUpperCase()}
+        </div>
+        <button onClick=${onClose} style=${{background:"transparent",border:"none",color:T.muted,fontSize:18,cursor:"pointer",padding:"0 4px"}}>✕</button>
+      </div>
+
+      ${rows.length===0?html`<div style=${{padding:"32px 20px",textAlign:"center",color:T.muted,fontSize:12,letterSpacing:2}}>VILA</div>`:rows.map((row,ri)=>html`
+        <div key=${ri} style=${{borderBottom:`1px solid ${T.border}`}}>
+          <div style=${{padding:"12px 20px 6px"}}><${Lbl}>${row.title}</${Lbl}></div>
+          ${row.segs&&html`<${RunSegs} segs=${row.segs}/>`}
+          ${row.rows5&&html`<div style=${{padding:"0 20px 12px"}}>
+            ${[1,2,3,4,5].map(i=>html`<div key=${i} style=${{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:i<5?`1px solid ${T.border}22`:"none"}}>
+              <span style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:11,letterSpacing:2,color:T.muted}}>SET ${i}</span>
+              <span style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:16,fontWeight:700,color:T.white}}>${row.reps} REPS</span>
+            </div>`)}
+          </div>`}
+          ${row.bench&&html`<div style=${{padding:"0 20px 12px"}}>
+            ${row.sets.map((s,i)=>html`<div key=${i} style=${{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:i<row.sets.length-1?`1px solid ${T.border}22`:"none"}}>
+              <span style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:11,letterSpacing:2,color:s.isMax?T.red:s.isBO?T.gold:T.muted}}>${s.id}</span>
+              <span style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:14,fontWeight:700,color:s.isMax?T.red:T.white}}>${s.kg} kg × ${s.reps}</span>
+            </div>`)}
+          </div>`}
+        </div>`)}
+
+      <div style=${{padding:16}}>
+        ${isToday
+          ?html`<button onClick=${onGotoToday} style=${{width:"100%",padding:"14px 0",background:T.red,border:"none",color:"white",fontFamily:"Barlow Condensed, sans-serif",fontSize:11,letterSpacing:3,fontWeight:700,cursor:"pointer"}}>GÅ TILL IDAG →</button>`
+          :html`<div style=${{textAlign:"center",fontSize:9,color:T.muted,letterSpacing:2,padding:"8px 0"}}>ENBART VISNING — KAN INTE LOGGAS</div>`}
+      </div>
+    </div>
+  </div>`;
+}
+
+function WeekView({data,today,setView}){
+  const dow=today.getDay(),mon=new Date(today);
+  mon.setDate(today.getDate()-(dow===0?6:dow-1));
+  const DNAMES=["MÅN","TIS","ONS","TOR","FRE","LÖR","SÖN"];
+  const [selected,setSelected]=useState(null);
+
+  return html`<div style=${{padding:20}}>
+    <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:10,letterSpacing:4,color:T.muted,marginBottom:16}}>VECKOÖVERSIKT</div>
+    ${Array.from({length:7},(_,i)=>{
+      const day=new Date(mon);day.setDate(mon.getDate()+i);
+      const dstr=ds(day),s=schedule(day),log=data.logs[dstr]||{};
+      const isToday=dstr===ds(today),isPast=day<today;
+      const done=log.runDone||log.benchDailyMax||log.chinsMax||log.fiveKmSec;
+      const acts=[];
+      if(s.chins)    acts.push(s.chinTest?"CHINS TEST":"CHINS GTG");
+      if(s.bench)    acts.push("BÄNKPRESS");
+      if(s.runTue)   acts.push("HM-TEMPO 22KM");
+      if(s.runThu)   acts.push("Z2 LÅNGPASS");
+      if(s.runSat)   acts.push(`TRÖSKEL PASS ${satPass(day)}`);
+      if(s.test5km)  acts.push("5KM MAXTEST");
+      if(s.intervals)acts.push(sunType(day)==="A"?"8×1KM":"5K-FART");
+      const clickable=s.active;
+      return html`<div key=${i} onClick=${clickable?()=>setSelected(day):null}
+        style=${{display:"flex",gap:16,padding:"12px 16px",marginBottom:2,
+          background:done?`${T.red}08`:isToday?`${T.red}12`:T.card,
+          border:`1px solid ${done?T.red+"30":isToday?T.red+"50":T.border}`,
+          opacity:!s.active?0.3:1,
+          cursor:clickable?"pointer":"default"}}>
+        <div style=${{minWidth:44}}>
+          <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:10,letterSpacing:2,fontWeight:700,color:isToday?T.red:T.muted}}>${DNAMES[i]}</div>
+          <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:22,fontWeight:900,color:isToday?T.red:T.white}}>${day.getDate()}</div>
+        </div>
+        <div style=${{flex:1,paddingTop:2}}>
+          ${acts.length===0?html`<span style=${{fontSize:10,color:T.muted}}>VILA</span>`:acts.map((a,j)=>html`<div key=${j} style=${{fontSize:10,letterSpacing:2,fontFamily:"Barlow Condensed, sans-serif",fontWeight:700,color:done?T.muted:a.includes("TEST")?T.gold:T.text,marginBottom:3,textDecoration:done?"line-through":"none"}}>${a}</div>`)}
+          ${done&&html`<div style=${{display:"flex",gap:12,marginTop:4,flexWrap:"wrap"}}>
+            ${log.benchDailyMax&&html`<span style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:11,color:T.red,letterSpacing:1}}>${log.benchDailyMax} KG</span>`}
+            ${log.chinsMax&&html`<span style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:11,color:T.red,letterSpacing:1}}>${log.chinsMax} CHINS</span>`}
+            ${log.fiveKmSec&&html`<span style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:11,color:T.gold,letterSpacing:1}}>${fmtSecs(log.fiveKmSec)} · 5KM</span>`}
+            ${log.runDone&&!log.fiveKmSec&&html`<span style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:11,color:T.muted,letterSpacing:1}}>GENOMFÖRT</span>`}
+          </div>`}
+        </div>
+        <div style=${{display:"flex",alignItems:"center",gap:8}}>
+          ${s.active&&done&&html`<div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:13,color:T.red}}>✓</div>`}
+          ${s.active&&!done&&html`<div style=${{color:T.muted,fontSize:12}}>›</div>`}
+        </div>
+      </div>`;
+    })}
+    ${selected&&html`<${PassDetail}
+      day=${selected}
+      data=${data}
+      isToday=${ds(selected)===ds(today)}
+      onClose=${()=>setSelected(null)}
+      onGotoToday=${()=>{setSelected(null);setView("today");}}
+    />`}
+  </div>`;
+}
+
+function ProgressView({data}){
+  const tenKmMin=est10(data.fiveKmSec),usmc=usmcLevel(data.chinsMax);
+  const bChart=(data.benchHist||[]).map(x=>({d:x.d.slice(5),v:x.v}));
+  const cChart=(data.chinsHist||[]).map(x=>({d:x.d.slice(5),v:x.v}));
+  const fChart=(data.fiveKmHist||[]).map(x=>({d:x.d.slice(5),v:+(x.v/60).toFixed(1)}));
+  return html`<div style=${{padding:20}}>
+    <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:10,letterSpacing:4,color:T.muted,marginBottom:16}}>FRAMSTEG</div>
+    <${Block}><div style=${{padding:"16px 20px"}}>
+      <${Lbl}>NULÄGE — MÅL</${Lbl}>
+      <table style=${{width:"100%",borderCollapse:"collapse"}}>
+        <thead><tr>${[["","left"],["START","center"],["NU","center"],["MÅL","center"]].map(([h,a])=>html`<th key=${h} style=${{textAlign:a,fontSize:9,letterSpacing:2,color:T.muted,fontWeight:700,paddingBottom:8}}>${h}</th>`)}</tr></thead>
+        <tbody>
+          ${[
+            {l:"BÄNKPRESS",s:"80 KG",c:`${data.benchMax} KG`,g:"120 KG"},
+            {l:"CHINS MAX",s:"10",c:`${data.chinsMax}`,g:"30"},
+            {l:"5 KM",s:"19:11",c:fmtSecs(data.fiveKmSec),g:"18:00"},
+            {l:"10 KM (EST.)",s:"40:00",c:`${Math.floor(tenKmMin)}:${pad(Math.round((tenKmMin%1)*60))}`,g:"37:30"},
+          ].map((row,i)=>html`<tr key=${i} style=${{borderTop:`1px solid ${T.border}`}}>
+            <td style=${{padding:"10px 0",fontFamily:"Barlow Condensed, sans-serif",fontSize:10,letterSpacing:2,color:T.muted}}>${row.l}</td>
+            <td style=${{textAlign:"center",color:T.muted,fontSize:12}}>${row.s}</td>
+            <td style=${{textAlign:"center",fontFamily:"Barlow Condensed, sans-serif",fontSize:16,fontWeight:700,color:T.white}}>${row.c}</td>
+            <td style=${{textAlign:"center",fontFamily:"Barlow Condensed, sans-serif",fontSize:13,color:T.gold}}>${row.g}</td>
+          </tr>`)}
+        </tbody>
+      </table>
+    </div></${Block}>
+    ${usmc&&html`<${Block} accent=${usmc.color} style=${{marginTop:8}}><div style=${{padding:"14px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <div><div style=${{fontSize:8,color:T.muted,letterSpacing:2.5,marginBottom:4}}>USMC REFERENS UPPNÅDD</div><div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:15,fontWeight:700,letterSpacing:2,color:usmc.color}}>${usmc.label}</div></div>
+      <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:22,fontWeight:900,color:usmc.color}}>${usmc.sub}</div>
+    </div></${Block}>`}
+    ${[["BÄNKPRESS 1RM (KG)",bChart,T.red,false],["CHINS MAX (REPS)",cChart,T.red,false],["5 KM TID (MIN)",fChart,T.gold,true]].map(([title,chartData,color,rev])=>html`
+      <div key=${title} style=${{marginTop:16}}>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:9,letterSpacing:3,color:T.muted,marginBottom:8}}>${title}</div>
+        <${Block}><div style=${{padding:"12px 16px 8px"}}><${MiniChart} data=${chartData} color=${color} reversed=${rev}/></div></${Block}>
+      </div>`)}
+  </div>`;
+}
+
+function FMAtletView({data}){
+  const [sim,setSim]=useState({bench:"",chins:"",min:"",sec:""});
+  const tenKmMin=est10(data.fiveKmSec),fm=calcFM(data.benchMax,data.chinsMax,tenKmMin);
+  const daysLeft=Math.max(0,Math.ceil((PROG_END-new Date())/86400000));
+  const simFM=sim.bench&&sim.chins&&sim.min?calcFM(+sim.bench,+sim.chins,+sim.min+(+sim.sec||0)/60):null;
+  return html`<div style=${{padding:20}}>
+    <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:10,letterSpacing:4,color:T.muted,marginBottom:16}}>FM-ATLET STATUS</div>
+    <${Block} accent=${fm.color}><div style=${{padding:"28px 24px",textAlign:"center"}}>
+      <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:64,fontWeight:900,letterSpacing:8,color:fm.color,lineHeight:1}}>${fm.grade}</div>
+      <div style=${{fontSize:9,color:T.muted,letterSpacing:4,marginTop:6}}>${fm.desc}</div>
+      <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:44,fontWeight:700,color:T.white,marginTop:10}}>${fm.score}</div>
+      <div style=${{fontSize:9,color:T.muted,letterSpacing:3}}>POÄNG — LÄGRE ÄR BÄTTRE</div>
+    </div></${Block}>
+    <${Block} style=${{marginTop:8}}><div style=${{padding:"16px 20px"}}>
+      <${Lbl}>POÄNGBERÄKNING</${Lbl}>
+      ${[
+        {l:"10 KM (ESTIMAT)",v:`${Math.floor(tenKmMin)}:${pad(Math.round((tenKmMin%1)*60))} MIN`,p:`+${Math.floor(tenKmMin)*5}`,pos:true},
+        {l:"BÄNKPRESS",v:`${data.benchMax} KG`,p:`−${data.benchMax}`},
+        {l:"CHINS",v:`${data.chinsMax} REPS`,p:`−${data.chinsMax*2}`},
+      ].map((row,i)=>html`<div key=${i} style=${{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${T.border}`}}>
+        <div><div style=${{fontSize:9,color:T.muted,letterSpacing:2}}>${row.l}</div><div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:15,color:T.text,marginTop:2}}>${row.v}</div></div>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:18,fontWeight:700,color:row.pos?T.red:T.gold}}>${row.p}</div>
+      </div>`)}
+      <div style=${{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:12}}>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:12,letterSpacing:3,color:T.text}}>TOTALT</div>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:28,fontWeight:900,color:fm.color}}>${fm.score} P</div>
+      </div>
+    </div></${Block}>
+    <${Block} style=${{marginTop:8}}><div style=${{padding:"16px 20px"}}>
+      <${Lbl}>GRADERINGSSKALA</${Lbl}>
+      ${[{g:"GULD",d:"1:A GRADEN",r:"≤ 50",c:T.gold},{g:"SILVER",d:"2:A GRADEN",r:"51–80",c:"#8E8E8E"},{g:"BRONS",d:"3:E GRADEN",r:"81–130",c:"#B07030"}].map((row,i)=>html`
+        <div key=${i} style=${{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:i<2?`1px solid ${T.border}`:"none",opacity:fm.grade===row.g?1:0.3}}>
+          <div style=${{display:"flex",gap:12,alignItems:"center"}}>
+            <div style=${{width:3,height:26,background:fm.grade===row.g?row.c:"transparent"}}></div>
+            <div><div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:18,fontWeight:700,letterSpacing:2,color:row.c}}>${row.g}</div><div style=${{fontSize:9,color:T.muted,letterSpacing:1}}>${row.d}</div></div>
+          </div>
+          <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:14,color:T.text}}>${row.r}</div>
+        </div>`)}
+    </div></${Block}>
+    <${Block} style=${{marginTop:8}}><div style=${{padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <div><div style=${{fontSize:9,color:T.muted,letterSpacing:2}}>DAGAR KVAR</div><div style=${{fontSize:10,color:T.muted,marginTop:2}}>31 DECEMBER 2026</div></div>
+      <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:52,fontWeight:900,color:T.red,lineHeight:1}}>${daysLeft}</div>
+    </div></${Block}>
+    <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:9,letterSpacing:3,color:T.muted,margin:"20px 0 8px"}}>OM DU TESTAR IDAG — SIMULATOR</div>
+    <${Block}><div style=${{padding:"16px 20px"}}>
+      <div style=${{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+        ${[["bench",`Bänk — nu: ${data.benchMax}`],["chins",`Chins — nu: ${data.chinsMax}`]].map(([k,pl])=>html`
+          <input key=${k} type="number" placeholder=${pl} value=${sim[k]} onInput=${e=>setSim(p=>({...p,[k]:e.target.value}))} style=${{...IST}}/>`)}
+      </div>
+      <div style=${{display:"flex",gap:8,marginBottom:14}}>
+        <input type="number" placeholder="10 km min" value=${sim.min} onInput=${e=>setSim(p=>({...p,min:e.target.value}))} style=${{...IST,flex:1}}/>
+        <input type="number" placeholder="sek" value=${sim.sec} onInput=${e=>setSim(p=>({...p,sec:e.target.value}))} style=${{...IST,flex:1}}/>
+      </div>
+      ${simFM&&html`<div style=${{borderLeft:`3px solid ${simFM.color}`,padding:"14px 16px",background:"#09090A",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div><div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:28,fontWeight:900,color:simFM.color,letterSpacing:3}}>${simFM.grade}</div><div style=${{fontSize:9,color:T.muted,letterSpacing:1}}>${simFM.desc}</div></div>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:40,fontWeight:900,color:T.white}}>${simFM.score}</div>
+      </div>`}
+    </div></${Block}>
+  </div>`;
+}
+
+function App(){
+  const [view,setView]=useState("today"),[data,setData]=useState(null),[rest,setRest]=useState(0);
+  const today=now0();
+
+  useEffect(()=>{setData(loadDB()||{...DEFAULTS});},[]);
+  useEffect(()=>{
+    if(rest<=0) return;
+    const id=setInterval(()=>setRest(r=>r>1?r-1:0),1000);
+    return()=>clearInterval(id);
+  },[rest>0]);
+
+  const handleLog=useCallback((dstr,key,value)=>{
+    setData(prev=>{
+      const next={...prev,logs:{...prev.logs,[dstr]:{...prev.logs[dstr],[key]:value}}};
+      if(key==="benchDailyMax"){next.benchHist=[...(prev.benchHist||[]),{d:dstr,v:value}];next.benchMax=value;}
+      if(key==="chinsMax"){next.chinsHist=[...(prev.chinsHist||[]),{d:dstr,v:value}];next.chinsMax=value;}
+      if(key==="fiveKmSec"){next.fiveKmHist=[...(prev.fiveKmHist||[]),{d:dstr,v:value}];if(value<(prev.fiveKmSec||99999))next.fiveKmSec=value;}
+      saveDB(next);return next;
+    });
+  },[]);
+
+  if(!data)return html`<div style=${{background:T.black,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"Barlow Condensed, sans-serif",fontSize:16,letterSpacing:6,color:T.muted}}>LADDAR</div>`;
+
+  const tenKmMin=est10(data.fiveKmSec),fm=calcFM(data.benchMax,data.chinsMax,tenKmMin);
+  const TABS=[{id:"today",label:"IDAG"},{id:"week",label:"VECKA"},{id:"progress",label:"FRAMSTEG"},{id:"fmatlet",label:"FM ATLET"}];
+
+  return html`<div style=${{background:T.bg,minHeight:"100vh",color:T.text,fontFamily:"Barlow, sans-serif",maxWidth:430,margin:"0 auto",fontSize:13}}>
+    <div style=${{background:T.black,borderBottom:`3px solid ${T.red}`,padding:"14px 20px 10px",position:"sticky",top:0,zIndex:50,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <div>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:22,fontWeight:900,letterSpacing:5,color:T.white}}>FM ATLET</div>
+        <div style=${{fontSize:9,color:T.muted,letterSpacing:2.5,marginTop:1}}>${today.toLocaleDateString("sv-SE",{weekday:"long",day:"numeric",month:"long"}).toUpperCase()}</div>
+      </div>
+      <div style=${{textAlign:"right"}}>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:22,fontWeight:900,letterSpacing:3,color:fm.color}}>${fm.grade}</div>
+        <div style=${{fontFamily:"Barlow Condensed, sans-serif",fontSize:13,color:T.muted}}>${fm.score} P</div>
+      </div>
+    </div>
+    <${RestBar} sec=${rest} onStop=${()=>setRest(0)}/>
+    <div style=${{paddingBottom:72}}>
+      ${view==="today"   &&html`<${TodayView}    data=${data} today=${today} onLog=${handleLog} onRest=${setRest}/>`}
+      ${view==="week"    &&html`<${WeekView}     data=${data} today=${today} setView=${setView}/>`}
+      ${view==="progress"&&html`<${ProgressView} data=${data}/>`}
+      ${view==="fmatlet" &&html`<${FMAtletView}  data=${data}/>`}
+    </div>
+    <div style=${{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:430,background:T.black,borderTop:`1px solid ${T.border}`,display:"flex"}}>
+      ${TABS.map(t=>html`<button key=${t.id} onClick=${()=>setView(t.id)} style=${{flex:1,background:"transparent",border:"none",borderTop:`3px solid ${view===t.id?T.red:"transparent"}`,color:view===t.id?T.red:T.muted,padding:"14px 0",fontFamily:"Barlow Condensed, sans-serif",fontSize:11,fontWeight:700,letterSpacing:1.5,cursor:"pointer"}}>${t.label}</button>`)}
+    </div>
+  </div>`;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(html`<${App}/>`);
+</script>
+</body>
+</html>
